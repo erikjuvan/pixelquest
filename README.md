@@ -33,12 +33,17 @@ Build cores on the target architecture; do not copy Pi `.so` files from another 
 /usr/local/bin/pixelquest    command-line client symlink
 /etc/pixelquest/             cartridges.json, its example/defaults, and retroarch.cfg
 /var/lib/pixelquest/         ROMs, saves, states, and cartridge/display state
-/var/cache/pixelquest/       rendered RetroArch configuration, downloads, and thumbnails
+/var/cache/pixelquest/       rendered RetroArch configuration, assets, downloads, and thumbnails
 /var/log/pixelquest/         daemon and RetroArch logs
 /run/pixelquest/             daemon socket (created by systemd)
 ```
 
 The source checkout may be deleted after installation. The files in `/etc/pixelquest` are seeded only on first install; updated `.default` copies are installed alongside them for comparison on later updates. `cartridges.json.example` is an always-current copy/pasteable catalog example.
+
+systemd runs the daemon as the unprivileged `pixelquest` user. The installer adds
+that account to the available audio, video, render, input, and GPIO device groups.
+Before the daemon starts, a short root-privileged display initializer clears tty1
+and hides its text cursor.
 
 ## ROMs and use
 
@@ -73,17 +78,29 @@ sudo cp /etc/pixelquest/cartridges.json.example \
 sudoedit /etc/pixelquest/cartridges.json
 ```
 
+The installer starts the service automatically. After adding the catalog entry,
+use the client to insert and launch the cartridge:
+
 ```bash
-sudo systemctl start pixelquest.service
 pixelquest list
 pixelquest insert my-game
 pixelquest reset
 pixelquest status
 ```
 
-`insert` is a development simulation of the cartridge sensor. It records the cartridge but does not launch a game; `reset` launches the currently inserted cartridge. `remove` stops a running game. RetroArch histories, favorites, remaps, playlists, core options, screenshots, recordings, and rGUI configuration are retained under `/var/lib/pixelquest/retroarch`; only disposable downloads, thumbnails, and rendered configuration use `/var/cache`.
+`insert` is a development simulation of the cartridge sensor. It records the cartridge but does not launch a game; `reset` launches the currently inserted cartridge. `remove` stops a running game. RetroArch histories, favorites, remaps, playlists, core options, screenshots, recordings, and rGUI configuration are retained under `/var/lib/pixelquest/retroarch`; only disposable assets, downloads, thumbnails, and rendered configuration use `/var/cache`.
 
-The service runs as the `pixelquest` user and joins normal Pi audio, video, render, and input groups when they exist. Its display initializer runs with the systemd privilege needed to clear tty1 before the daemon begins.
+## Monochrome
+
+Color output is the default. `pixelquest monochrome on` creates RetroArch's
+persistent global shader preset, and `pixelquest monochrome off` removes it.
+Use `pixelquest monochrome status` to show the selected mode. A mode change
+applies on the next reset or game launch.
+
+Pixel Quest owns `/var/lib/pixelquest/retroarch/config/global.glslp`: no file
+means color, while the canonical preset means monochrome. Unexpected contents
+produce an error and are never changed implicitly. Immutable shader sources
+remain with the application under `/opt/pixelquest/retroarch/shaders`.
 
 ## Uninstall
 

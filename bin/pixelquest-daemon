@@ -14,11 +14,11 @@ from pixelquest_runtime import (
     CORE_DIR,
     DATA_DIR,
     LOG_FILE,
-    MONOCHROME_MODE_FILE,
     SOCKET_FILE,
     ensure_runtime_directories,
-    monochrome_mode,
+    monochrome_enabled,
     retroarch_config,
+    set_monochrome_enabled,
 )
 
 CARTRIDGE_CATALOG_FILE = CONFIG_DIR / "cartridges.json"
@@ -181,8 +181,7 @@ def boot_console(cartridge_id=None):
 
     boot_result = start_game(cartridge_id)
     if not boot_result.startswith("started:"):
-        # The former boot helper printed this response to systemd's journal.
-        # Keep failed automatic launches visible without duplicating normal logs.
+        # Keep failed automatic launches visible in the daemon log and journal.
         log(f"Boot failed: {boot_result}")
 
     return boot_result
@@ -239,12 +238,7 @@ def list_cartridges():
 
 def set_monochrome(enabled):
     mode = "on" if enabled else "off"
-    temporary = MONOCHROME_MODE_FILE.with_suffix(".tmp")
-    try:
-        temporary.write_text(mode + "\n", encoding="utf-8")
-        os.replace(temporary, MONOCHROME_MODE_FILE)
-    finally:
-        temporary.unlink(missing_ok=True)
+    set_monochrome_enabled(enabled)
 
     log(f"Monochrome output set to {mode}; applies on the next game launch")
     return f"monochrome: {mode} (applies on next reset/game launch)"
@@ -276,7 +270,10 @@ def handle_command(command):
         # Development simulation of inserting a physical cartridge.
         CARTRIDGE_FILE.write_text(cartridge_id + "\n", encoding="utf-8")
 
-        return f"inserted: {cartridge_id}"
+        if cartridge_id in load_cartridges():
+            return f"inserted: {cartridge_id}"
+
+        return f"inserted: {cartridge_id} (not in current catalog)"
 
     if action == "remove":
         try:
@@ -304,7 +301,8 @@ def handle_command(command):
         if len(parts) == 1 or (
             len(parts) == 2 and parts[1].lower() == "status"
         ):
-            return f"monochrome: {monochrome_mode()}"
+            mode = "on" if monochrome_enabled() else "off"
+            return f"monochrome: {mode}"
 
         if len(parts) == 2 and parts[1].lower() in ("on", "off"):
             return set_monochrome(parts[1].lower() == "on")

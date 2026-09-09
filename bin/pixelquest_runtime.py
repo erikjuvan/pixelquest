@@ -19,8 +19,19 @@ RESOURCE_DIR = APP_DIR / "retroarch"
 SOCKET_FILE = RUN_DIR / "pixelquest.sock"
 LOG_FILE = LOG_DIR / "daemon.log"
 CARTRIDGE_FILE = DATA_DIR / "state" / "cartridge-present"
-MONOCHROME_MODE_FILE = DATA_DIR / "state" / "monochrome-mode"
-GLOBAL_SHADER_PRESET = CACHE_DIR / "retroarch" / "config" / "global.glslp"
+RETROARCH_CONFIG_DIR = DATA_DIR / "retroarch" / "config"
+GLOBAL_SHADER_PRESET = RETROARCH_CONFIG_DIR / "global.glslp"
+
+# The global preset is both RetroArch configuration and Pixel Quest state. There
+# is deliberately no separate mode flag: no file means color; the canonical file
+# means monochrome. Any other content is invalid and is never changed implicitly.
+PIXELQUEST_MANAGED_SETTINGS = {
+    "auto_shaders_enable": "true",
+    "config_save_on_exit": "false",
+    "rgui_config_directory": RETROARCH_CONFIG_DIR.as_posix(),
+    "video_shader": "",
+    "video_shader_enable": "true",
+}
 
 
 def ensure_runtime_directories():
@@ -38,30 +49,37 @@ def ensure_runtime_directories():
         directory.mkdir(parents=True, exist_ok=True)
 
 
-def monochrome_mode():
-    try:
-        mode = MONOCHROME_MODE_FILE.read_text(encoding="utf-8").strip().lower()
-    except FileNotFoundError:
-        return "off"
-    if mode not in ("on", "off"):
-        raise ValueError(f"invalid monochrome mode: {mode!r}")
-    return mode
+def _monochrome_preset_content():
+    shader = RESOURCE_DIR / "shaders" / "pixelquest-monochrome.glslp"
+    reference = os.path.relpath(shader, GLOBAL_SHADER_PRESET.parent).replace(os.sep, "/")
+    return f'#reference "{reference}"\n'
 
 
-def sync_monochrome_preset():
-    if monochrome_mode() == "off":
+def validate_monochrome_preset():
+    """Raise an error if the global preset exists but is not canonical."""
+    if not GLOBAL_SHADER_PRESET.exists():
+        return
+    if GLOBAL_SHADER_PRESET.read_text(encoding="utf-8") != _monochrome_preset_content():
+        raise ValueError(f"invalid Pixel Quest global shader preset: {GLOBAL_SHADER_PRESET}")
+
+
+def monochrome_enabled():
+    """Return whether monochrome is enabled."""
+    validate_monochrome_preset()
+    return GLOBAL_SHADER_PRESET.exists()
+
+
+def set_monochrome_enabled(enabled):
+    """Enable monochrome by creating the preset, or disable it by removing it."""
+    GLOBAL_SHADER_PRESET.parent.mkdir(parents=True, exist_ok=True)
+
+    if not enabled:
         GLOBAL_SHADER_PRESET.unlink(missing_ok=True)
         return
 
-    GLOBAL_SHADER_PRESET.parent.mkdir(parents=True, exist_ok=True)
-    shader = RESOURCE_DIR / "shaders" / "pixelquest-monochrome.glslp"
-    reference = os.path.relpath(
-        shader,
-        GLOBAL_SHADER_PRESET.parent,
-    ).replace(os.sep, "/")
     temporary = GLOBAL_SHADER_PRESET.with_suffix(".tmp")
     try:
-        temporary.write_text(f'#reference "{reference}"\n', encoding="utf-8")
+        temporary.write_text(_monochrome_preset_content(), encoding="utf-8")
         os.replace(temporary, GLOBAL_SHADER_PRESET)
     finally:
         temporary.unlink(missing_ok=True)
@@ -97,12 +115,12 @@ DIRECTORY_SETTINGS = {
 
 
 def runtime_path(relative_path):
-    """Translate the few path prefixes used in the checked-in RetroArch config."""
+    """Translate a checked-in RetroArch path to its installed location."""
     path = Path(relative_path)
     if ".." in path.parts:
         raise ValueError(f"RetroArch path escapes its installation: {relative_path}")
-    if path.parts[:2] == ("config", "retroarch"):
-        return RESOURCE_DIR.joinpath(*path.parts[2:])
+    if path.parts == ("config", "retroarch", "shaders"):
+        return RESOURCE_DIR / "shaders"
     if path.parts[:1] == ("cores",):
         return CORE_DIR.joinpath(*path.parts[1:])
     if path.parts[:2] == ("var", "saves") or path.parts[:2] == (
@@ -113,6 +131,7 @@ def runtime_path(relative_path):
     if path.parts[:2] == ("var", "log"):
         return LOG_DIR.joinpath(*path.parts[2:])
     if path.parts[:3] in (
+        ("var", "retroarch", "assets"),
         ("var", "retroarch", "downloads"),
         ("var", "retroarch", "thumbnails"),
     ):
@@ -124,7 +143,7 @@ def runtime_path(relative_path):
 
 def retroarch_config():
     ensure_runtime_directories()
-    sync_monochrome_preset()
+    validate_monochrome_preset()
     source = (CONFIG_DIR / "retroarch.cfg").read_text(encoding="utf-8")
 
     def expand(match):
@@ -135,14 +154,13 @@ def retroarch_config():
         return f'{setting} = "{path.as_posix()}"'
 
     rendered = RELATIVE_SETTING.sub(expand, source)
-    rendered = re.sub(
-        r"^[ \t]*config_save_on_exit[ \t]*=.*$",
-        'config_save_on_exit = "false"',
-        rendered,
-        flags=re.MULTILINE,
-    )
-    if not re.search(r"^[ \t]*config_save_on_exit[ \t]*=", rendered, re.MULTILINE):
-        rendered += '\nconfig_save_on_exit = "false"\n'
+    for setting, value in PIXELQUEST_MANAGED_SETTINGS.items():
+        replacement = f'{setting} = "{value}"'
+        pattern = rf"^[ \t]*{re.escape(setting)}[ \t]*=.*$"
+        if re.search(pattern, rendered, re.MULTILINE):
+            rendered = re.sub(pattern, replacement, rendered, flags=re.MULTILINE)
+        else:
+            rendered = rendered.rstrip("\n") + "\n" + replacement + "\n"
 
     target = CACHE_DIR / "retroarch" / "retroarch-runtime.cfg"
     target.parent.mkdir(parents=True, exist_ok=True)
