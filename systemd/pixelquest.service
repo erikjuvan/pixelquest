@@ -1,0 +1,17 @@
+[Unit]
+Description=Pixel Quest Launcher Daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+User=pixelquest
+Group=pixelquest
+RuntimeDirectory=pixelquest
+RuntimeDirectoryMode=0755
+WorkingDirectory=/opt/pixelquest
+ExecStartPre=+/opt/pixelquest/bin/pixelquest-display-init
+ExecStart=/opt/pixelquest/bin/pixelquest-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

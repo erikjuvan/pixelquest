@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Manual launch using the same location-derived configuration as the daemon."""
+
+import os
+import sys
+from pathlib import Path
+
+from pixelquest_runtime import APP_DIR, CORE_DIR, retroarch_config
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("usage: pixelquest-retroarch <core-name> <rom>", file=sys.stderr)
+        return 1
+
+    core = CORE_DIR / sys.argv[1]
+    rom = Path(sys.argv[2]).resolve()
+
+    try:
+        for path in (core, rom):
+            if not path.is_file():
+                raise FileNotFoundError(f"Required file not found: {path}")
+
+        config = retroarch_config()
+        os.chdir(APP_DIR)
+        os.execvp(
+            "retroarch",
+            ["retroarch", "--config", str(config), "-L", str(core), str(rom)],
+        )
+    except (OSError, ValueError) as error:
+        print(f"Cannot launch RetroArch: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

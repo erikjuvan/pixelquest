@@ -1,0 +1,9 @@
+#!/bin/bash
+
+TTY="/dev/tty1"
+
+# Clear the Linux console.
+printf '\033[2J\033[H' > "$TTY"
+
+# Hide the text cursor.
+printf '\033[?25l' > "$TTY"

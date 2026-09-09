@@ -1,0 +1,7 @@
+{
+    "my-game": {
+        "name": "My Game",
+        "system": "nes",
+        "rom": "roms/nes/MyGame.nes"
+    }
+}

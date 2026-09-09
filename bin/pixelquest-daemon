@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import time
+
+from pixelquest_runtime import (
+    APP_DIR,
+    CARTRIDGE_FILE,
+    CONFIG_DIR,
+    CORE_DIR,
+    DATA_DIR,
+    LOG_FILE,
+    MONOCHROME_MODE_FILE,
+    SOCKET_FILE,
+    ensure_runtime_directories,
+    monochrome_mode,
+    retroarch_config,
+)
+
+CARTRIDGE_CATALOG_FILE = CONFIG_DIR / "cartridges.json"
+
+CORES = {
+    "atari2600": CORE_DIR / "stella2014_libretro.so",
+    "nes": CORE_DIR / "nestopia_libretro.so",
+    "sega": CORE_DIR / "genesis_plus_gx_libretro.so",
+    "snes": CORE_DIR / "snes9x_libretro.so",
+}
+
+
+current_process = None
+current_cartridge = None
+console_booted = False
+
+CLIENT_TIMEOUT = 2
+MAX_COMMAND_BYTES = 4096
+
+
+def log(message):
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(message + "\n")
+
+    print(message, flush=True)
+
+
+def load_cartridges():
+    with CARTRIDGE_CATALOG_FILE.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def read_present_cartridge():
+    """
+    Return the ID of the cartridge currently present.
+
+    For now this reads /var/lib/pixelquest/state/cartridge-present.
+    Later this function can be replaced by the NFC reader.
+    """
+    try:
+        cartridge_id = CARTRIDGE_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+
+    if not cartridge_id:
+        return None
+
+    return cartridge_id
+
+
+def clear_dead_process():
+    """
+    Clear our process state if RetroArch has already exited.
+    """
+    global current_process
+    global current_cartridge
+
+    if current_process is not None and current_process.poll() is not None:
+        current_process = None
+        current_cartridge = None
+
+
+def stop_game():
+    global current_process
+    global current_cartridge
+
+    clear_dead_process()
+
+    if current_process is None:
+        current_cartridge = None
+        return "no game running"
+
+    log(f"Stopping cartridge: {current_cartridge}")
+
+    current_process.terminate()
+
+    try:
+        current_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        log("RetroArch did not terminate; killing it")
+        current_process.kill()
+        current_process.wait()
+
+    current_process = None
+    current_cartridge = None
+
+    return "game stopped"
+
+
+def start_game(cartridge_id):
+    global current_process
+    global current_cartridge
+
+    cartridges = load_cartridges()
+
+    if cartridge_id not in cartridges:
+        return f"unknown cartridge: {cartridge_id}"
+
+    entry = cartridges[cartridge_id]
+
+    system = entry["system"]
+    rom = DATA_DIR / entry["rom"]
+
+    if system not in CORES:
+        return f"unknown system: {system}"
+
+    core = CORES[system]
+
+    if not rom.is_file():
+        return f"ROM not found: {rom}"
+
+    if not core.is_file():
+        return f"core not found: {core}"
+
+    clear_dead_process()
+
+    if current_process is not None:
+        stop_game()
+
+    command = [
+        "retroarch",
+        "--config",
+        str(retroarch_config()),
+        "-L",
+        str(core),
+        str(rom),
+    ]
+
+    log(f"Starting cartridge {cartridge_id}: {entry['name']} [{system}]")
+
+    current_process = subprocess.Popen(command, cwd=APP_DIR)
+    current_cartridge = cartridge_id
+
+    return f"started: {entry['name']}"
+
+
+def boot_console(cartridge_id=None):
+    """
+    Called once when the Pixel Quest service starts.
+
+    A cartridge present during power-on starts automatically.
+    If none is present, the console remains idle.
+    """
+    global console_booted
+
+    if console_booted:
+        return "console already booted"
+
+    console_booted = True
+
+    # The daemon reads the simulated cartridge sensor directly at startup.
+    if cartridge_id is None:
+        cartridge_id = read_present_cartridge()
+
+    if cartridge_id is None:
+        log("Booted with no cartridge")
+        return "booted: no cartridge"
+
+    boot_result = start_game(cartridge_id)
+    if not boot_result.startswith("started:"):
+        # The former boot helper printed this response to systemd's journal.
+        # Keep failed automatic launches visible without duplicating normal logs.
+        log(f"Boot failed: {boot_result}")
+
+    return boot_result
+
+
+def reset_console():
+    """
+    Physical RESET semantics:
+
+    1. Stop the currently running game.
+    2. Re-read the cartridge currently inserted.
+    3. Start that cartridge.
+    4. If no cartridge is present, remain idle.
+    """
+    stop_game()
+
+    cartridge_id = read_present_cartridge()
+    if cartridge_id is None:
+        log("Reset with no cartridge")
+        return "reset: no cartridge"
+
+    log(f"Reset: cartridge {cartridge_id}")
+
+    return start_game(cartridge_id)
+
+
+def get_status():
+    clear_dead_process()
+
+    if not console_booted:
+        return "not booted"
+
+    if current_process is not None:
+        return f"running: {current_cartridge}"
+
+    cartridge_id = read_present_cartridge()
+
+    if cartridge_id is None:
+        return "idle: no cartridge"
+
+    return f"idle: cartridge present: {cartridge_id}"
+
+
+def list_cartridges():
+    cartridges = load_cartridges()
+
+    lines = []
+
+    for cartridge_id, entry in cartridges.items():
+        lines.append(f"{cartridge_id}: {entry['name']} [{entry['system']}]")
+
+    return "\n".join(lines)
+
+
+def set_monochrome(enabled):
+    mode = "on" if enabled else "off"
+    temporary = MONOCHROME_MODE_FILE.with_suffix(".tmp")
+    try:
+        temporary.write_text(mode + "\n", encoding="utf-8")
+        os.replace(temporary, MONOCHROME_MODE_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    log(f"Monochrome output set to {mode}; applies on the next game launch")
+    return f"monochrome: {mode} (applies on next reset/game launch)"
+
+
+def handle_command(command):
+    parts = command.strip().split()
+
+    if not parts:
+        return "empty command"
+
+    action = parts[0].lower()
+
+    if action == "boot":
+        if len(parts) == 1:
+            return boot_console()
+
+        if len(parts) == 2:
+            return boot_console(parts[1])
+
+        return "usage: boot [cartridge-id]"
+
+    if action == "insert":
+        if len(parts) != 2:
+            return "usage: insert <cartridge-id>"
+
+        cartridge_id = parts[1]
+
+        # Development simulation of inserting a physical cartridge.
+        CARTRIDGE_FILE.write_text(cartridge_id + "\n", encoding="utf-8")
+
+        return f"inserted: {cartridge_id}"
+
+    if action == "remove":
+        try:
+            CARTRIDGE_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+        stop_result = stop_game()
+
+        if stop_result == "no game running":
+            return "removed: no game running"
+
+        return "removed: game stopped"
+
+    if action == "reset":
+        return reset_console()
+
+    if action == "status":
+        return get_status()
+
+    if action == "list":
+        return list_cartridges()
+
+    if action == "monochrome":
+        if len(parts) == 1 or (
+            len(parts) == 2 and parts[1].lower() == "status"
+        ):
+            return f"monochrome: {monochrome_mode()}"
+
+        if len(parts) == 2 and parts[1].lower() in ("on", "off"):
+            return set_monochrome(parts[1].lower() == "on")
+
+        return "usage: monochrome <on|off|status>"
+
+    if action == "quit":
+        raise SystemExit
+
+    return f"unknown command: {action}"
+
+
+def cleanup():
+    stop_game()
+
+    try:
+        SOCKET_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def signal_handler(signum, _frame):
+    log(f"Received signal {signum}, shutting down")
+    raise SystemExit
+
+
+def receive_command(connection):
+    """Read one newline-terminated command, allowing fragmented socket writes."""
+    command = bytearray()
+    deadline = time.monotonic() + CLIENT_TIMEOUT
+
+    while len(command) <= MAX_COMMAND_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("command read timed out")
+        connection.settimeout(remaining)
+
+        chunk = connection.recv(MAX_COMMAND_BYTES + 1 - len(command))
+        if not chunk:
+            break
+
+        command.extend(chunk)
+        if b"\n" in command:
+            command = command.split(b"\n", 1)[0]
+            break
+
+    if len(command) > MAX_COMMAND_BYTES:
+        raise ValueError("command is too long")
+
+    return command.decode("utf-8").strip()
+
+
+def serve_connection(connection):
+    # A stalled or disconnected client must not take the console down.
+    connection.settimeout(CLIENT_TIMEOUT)
+
+    try:
+        try:
+            response = handle_command(receive_command(connection))
+        except (OSError, UnicodeError, ValueError) as error:
+            response = f"error: {error}"
+            log(f"Client request failed: {error}")
+        except Exception as error:
+            response = f"error: {error}"
+            log(f"ERROR: {error}")
+
+        connection.settimeout(CLIENT_TIMEOUT)
+        connection.sendall((response + "\n").encode("utf-8"))
+    except OSError as error:
+        log(f"Client disconnected: {error}")
+
+
+def main():
+    ensure_runtime_directories()
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    if SOCKET_FILE.exists():
+        SOCKET_FILE.unlink()
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    try:
+        sock.bind(str(SOCKET_FILE))
+        sock.listen(5)
+
+        os.chmod(SOCKET_FILE, 0o666)
+
+        # Boot locally after the listener is ready.  Starting the service must
+        # not depend on a separate ExecStartPost client winning a socket race.
+        log("Pixel Quest daemon started")
+        boot_console()
+
+        while True:
+            connection, _ = sock.accept()
+
+            with connection:
+                serve_connection(connection)
+
+    finally:
+        sock.close()
+        cleanup()
+
+
+if __name__ == "__main__":
+    main()
