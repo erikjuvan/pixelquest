@@ -72,6 +72,7 @@ install_packages() {
             build-essential \
             pkg-config \
             python3 \
+            python3-libgpiod \
             retroarch \
             ca-certificates
     elif command -v pacman >/dev/null; then
@@ -80,6 +81,7 @@ install_packages() {
             base-devel \
             pkgconf \
             python \
+            python-gpiod \
             retroarch \
             ca-certificates
     else
@@ -112,7 +114,7 @@ create_user() {
     # RetroArch needs audio, graphics, render, and input-device access.  tty1
     # remains root-only because the service's display initializer owns it.
     local device_group
-    for device_group in audio video render input; do
+    for device_group in audio video render input gpio; do
         if getent group "$device_group" >/dev/null; then
             usermod -aG "$device_group" "$SERVICE_USER"
         fi

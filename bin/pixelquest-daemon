@@ -5,6 +5,7 @@ import os
 import signal
 import socket
 import subprocess
+import threading
 import time
 
 from pixelquest_runtime import (
@@ -20,6 +21,7 @@ from pixelquest_runtime import (
     retroarch_config,
     set_monochrome_enabled,
 )
+from pixelquest_gpio import start_reset_button
 
 CARTRIDGE_CATALOG_FILE = CONFIG_DIR / "cartridges.json"
 
@@ -34,6 +36,7 @@ CORES = {
 current_process = None
 current_cartridge = None
 console_booted = False
+command_lock = threading.Lock()
 
 CLIENT_TIMEOUT = 2
 MAX_COMMAND_BYTES = 4096
@@ -208,6 +211,12 @@ def reset_console():
     return start_game(cartridge_id)
 
 
+def reset_from_button():
+    """Run a hardware reset without racing a socket command."""
+    with command_lock:
+        reset_console()
+
+
 def get_status():
     clear_dead_process()
 
@@ -361,7 +370,9 @@ def serve_connection(connection):
 
     try:
         try:
-            response = handle_command(receive_command(connection))
+            command = receive_command(connection)
+            with command_lock:
+                response = handle_command(command)
         except (OSError, UnicodeError, ValueError) as error:
             response = f"error: {error}"
             log(f"Client request failed: {error}")
@@ -385,6 +396,9 @@ def main():
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
+    reset_button_stop = None
+    reset_button_thread = None
+
     try:
         sock.bind(str(SOCKET_FILE))
         sock.listen(5)
@@ -395,6 +409,10 @@ def main():
         # not depend on a separate ExecStartPost client winning a socket race.
         log("Pixel Quest daemon started")
         boot_console()
+        reset_button_stop, reset_button_thread = start_reset_button(
+            reset_from_button,
+            log,
+        )
 
         while True:
             connection, _ = sock.accept()
@@ -403,6 +421,10 @@ def main():
                 serve_connection(connection)
 
     finally:
+        if reset_button_stop is not None:
+            reset_button_stop.set()
+        if reset_button_thread is not None:
+            reset_button_thread.join(timeout=2)
         sock.close()
         cleanup()
 

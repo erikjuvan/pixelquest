@@ -102,6 +102,13 @@ means color, while the canonical preset means monochrome. Unexpected contents
 produce an error and are never changed implicitly. Immutable shader sources
 remain with the application under `/opt/pixelquest/retroarch/shaders`.
 
+## Reset button
+
+Connect a normally-open reset button between BCM GPIO 26 (physical header pin 37)
+and GND. Pixel Quest enables the pin's internal pull-up, so a button press pulls it
+low. The daemon listens for the falling edge and ignores additional edges for 50
+ms to debounce the switch.
+
 ## Uninstall
 
 ```bash
