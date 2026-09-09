@@ -32,6 +32,7 @@ Build cores on the target architecture; do not copy Pi `.so` files from another 
 /opt/pixelquest/             application code, RetroArch resources, and cores
 /usr/local/bin/pixelquest    command-line client symlink
 /etc/pixelquest/             cartridges.json, its example/defaults, and retroarch.cfg
+/boot/firmware/              Pixel Quest power-button overlay configuration
 /var/lib/pixelquest/         ROMs, saves, states, and cartridge/display state
 /var/cache/pixelquest/       rendered RetroArch configuration, assets, downloads, and thumbnails
 /var/log/pixelquest/         daemon and RetroArch logs
@@ -109,6 +110,30 @@ and GND. Pixel Quest enables the pin's internal pull-up, so a button press pulls
 low. The daemon listens for the falling edge and ignores additional edges for 50
 ms to debounce the switch.
 
+## Power button and safe power-off
+
+Use a normally-open dual-pole power button with the Pololu Big Pushbutton Power
+Switch with Reverse Voltage Protection, HP:
+
+- Connect one pole between the Pololu switch's `A` and `GND` pins. This is the
+  switch's on-only configuration, so it can turn the console on without ever
+  cutting power directly.
+- Connect the other pole between BCM GPIO 27 (physical header pin 13) and Pi
+  GND. A press becomes a Linux power-key event and requests a normal system
+  power-off.
+- Connect BCM GPIO 10 (physical header pin 19) to the Pololu `OFF` input, and
+  connect the Pi and Pololu grounds together. During Linux power-off, the
+  `gpio-poweroff` driver activates this pin and the Pololu switch removes power.
+
+The installer writes these two Raspberry Pi device-tree overlays to
+`pixelquest-power.cfg` beside the active boot `config.txt`, and adds a single
+`include pixelquest-power.cfg` line. It also explicitly configures systemd to
+handle `KEY_POWER` as `poweroff`. Reboot after installation or update to load
+the overlays. Once they are active, a reboot also asserts the power-off signal,
+so the Pololu switch turns the console off instead of automatically restarting
+it. Keep the two button poles electrically separate; the Pololu `A` input must
+not be joined to the Pi GPIO.
+
 ## Uninstall
 
 ```bash
@@ -120,3 +145,5 @@ Normal uninstall removes the application, cache, logs, and service but retains `
 ```bash
 sudo ./uninstall.sh --purge
 ```
+
+Reboot after uninstalling to unload the power-button overlays.

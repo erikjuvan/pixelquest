@@ -44,6 +44,29 @@ cleanup_core_build() {
     [[ -z "$CORE_BUILD_DIR" ]] || rm -rf -- "$CORE_BUILD_DIR"
 }
 
+install_power_button_configuration() {
+    local boot_config=/boot/firmware/config.txt
+
+    [[ -f "$boot_config" ]] || \
+        die "Raspberry Pi boot configuration not found: $boot_config"
+
+    install -m 0644 \
+        "$SOURCE_ROOT/config/pixelquest-power.cfg" \
+        /boot/firmware/pixelquest-power.cfg
+
+    if ! grep -Eq '^[[:space:]]*include[[:space:]]+pixelquest-power\.cfg[[:space:]]*$' \
+        "$boot_config"; then
+        {
+            printf '\n# Pixel Quest power button and power-cut GPIOs\n'
+            printf 'include pixelquest-power.cfg\n'
+        } >> "$boot_config"
+    fi
+
+    install -D -m 0644 \
+        "$SOURCE_ROOT/config/pixelquest-power-button.conf" \
+        /etc/systemd/logind.conf.d/pixelquest-power-button.conf
+}
+
 trap cleanup_core_build EXIT
 
 [[ ${EUID} -eq 0 ]] || die "run as root: sudo ./install.sh"
@@ -330,6 +353,9 @@ else
     echo "    Seeded RetroArch configuration."
 fi
 
+step "Installing power button configuration"
+install_power_button_configuration
+
 if [[ $FORCE_CORES == true ]]; then
     echo "==> Rebuilding cores because --rebuild-cores was requested."
     build_cores
@@ -368,4 +394,5 @@ systemctl is-active --quiet pixelquest.service || \
     die "pixelquest.service did not become active; inspect: journalctl -u pixelquest.service"
 
 echo "    pixelquest.service is active."
-echo 'Installed and running. Add ROMs under /var/lib/pixelquest/roms and use pixelquest reset to launch one.'
+echo 'Installed and running. Reboot once to activate the power-button GPIO configuration.'
+echo 'Add ROMs under /var/lib/pixelquest/roms and use pixelquest reset to launch one.'

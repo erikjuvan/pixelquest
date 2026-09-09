@@ -13,6 +13,20 @@ SERVICE_NAME=pixelquest.service
 SERVICE_USER=pixelquest
 COMMAND_LINK=/usr/local/bin/pixelquest
 
+remove_power_button_configuration() {
+    local boot_config=/boot/firmware/config.txt
+
+    rm -f /boot/firmware/pixelquest-power.cfg
+    if [[ -f "$boot_config" ]]; then
+        sed -i \
+            -e '\|^[[:space:]]*# Pixel Quest power button and power-cut GPIOs[[:space:]]*$|d' \
+            -e '\|^[[:space:]]*include[[:space:]]\+pixelquest-power\.cfg[[:space:]]*$|d' \
+            "$boot_config"
+    fi
+
+    rm -f /etc/systemd/logind.conf.d/pixelquest-power-button.conf
+}
+
 [[ ${EUID} -eq 0 ]] || {
     echo 'run as root: sudo ./uninstall.sh [--purge]' >&2
     exit 1
@@ -35,6 +49,7 @@ esac
 # deleting the unit.  The command is harmless when nothing is installed/running.
 systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME"
+remove_power_button_configuration
 
 # Remove only the symlink created by this installer.  A user-replaced command
 # must not be deleted as part of uninstalling Pixel Quest.
